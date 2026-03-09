@@ -1271,45 +1271,51 @@ async function startScanner() {
   }
 }
 
-function startDecoding() {
-  const video = document.getElementById('scanner-video');
-  const canvas = document.getElementById('scanner-canvas');
-  const ctx = canvas.getContext('2d');
+async function startScanner() {
+  const overlay = document.getElementById('scanner-overlay');
+  overlay.style.display = 'flex';
+  document.getElementById('scanner-status').textContent = 'Indlæser scanner...';
 
-  // Try native BarcodeDetector first (Chrome/Edge on Android)
-  if ('BarcodeDetector' in window) {
-    const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8'] });
-    scannerInterval = setInterval(async () => {
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
-        try {
-          const barcodes = await detector.detect(canvas);
-          if (barcodes.length > 0) {
-            const code = barcodes[0].rawValue;
-            handleScannedCode(code);
-          }
-        } catch(e) {}
-      }
-    }, 300);
-  } else {
-    // Fallback: ZXing
-    try {
-      const hints = new Map();
-      const codeReader = new ZXing.BrowserMultiFormatReader(hints);
-      codeReader.decodeFromVideoDevice(null, 'scanner-video', (result, err) => {
-        if (result) {
-          handleScannedCode(result.getText());
-          codeReader.reset();
-        }
-      });
-      window._zxingReader = codeReader;
-    } catch(e) {
-      document.getElementById('scanner-status').textContent = 'Scanner ikke understøttet — skriv ISBN manuelt';
-    }
+  // Use html5-qrcode — most reliable on Android Chrome
+  if (!window.Html5Qrcode) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  // Replace video element with html5-qrcode div
+  const videoEl = document.getElementById('scanner-video');
+  videoEl.style.display = 'none';
+  let scannerDiv = document.getElementById('html5-qr-scanner');
+  if (!scannerDiv) {
+    scannerDiv = document.createElement('div');
+    scannerDiv.id = 'html5-qr-scanner';
+    scannerDiv.style.cssText = 'width:320px;height:200px;';
+    videoEl.parentNode.insertBefore(scannerDiv, videoEl);
+  }
+
+  try {
+    window._html5QrCode = new Html5Qrcode('html5-qr-scanner');
+    await window._html5QrCode.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 120 } },
+      (decodedText) => {
+        handleScannedCode(decodedText);
+      },
+      () => {}
+    );
+    document.getElementById('scanner-status').textContent = 'Hold stregkoden ind mod kameraet...';
+  } catch(e) {
+    document.getElementById('scanner-status').textContent = 'Kunne ikke åbne kamera — tjek tilladelser i Chrome';
+    console.error(e);
   }
 }
+
+function startDecoding() {} // ikke brugt længere
 
 function handleScannedCode(code) {
   stopScanner();
@@ -1320,8 +1326,12 @@ function handleScannedCode(code) {
   lookupISBN();
 }
 
-function stopScanner() {
+async function stopScanner() {
   if (scannerInterval) { clearInterval(scannerInterval); scannerInterval = null; }
+  if (window._html5QrCode) {
+    try { await window._html5QrCode.stop(); } catch(e) {}
+    window._html5QrCode = null;
+  }
   if (window._zxingReader) { try { window._zxingReader.reset(); } catch(e){} window._zxingReader = null; }
   if (scannerStream) { scannerStream.getTracks().forEach(t => t.stop()); scannerStream = null; }
   document.getElementById('scanner-overlay').style.display = 'none';
