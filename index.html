@@ -1269,39 +1269,72 @@ async function startScanner() {
   const overlay = document.getElementById('scanner-overlay');
   overlay.style.display = 'flex';
   document.getElementById('scanner-status').textContent = 'Indlæser scanner...';
-
-  if (!window.Html5Qrcode) {
-    await new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
-      script.onload = resolve;
-      script.onerror = () => {
-        document.getElementById('scanner-status').textContent = 'Kunne ikke indlæse scanner-bibliotek';
-        reject();
-      };
-      document.head.appendChild(script);
-    }).catch(() => { return; });
-  }
-
-  // Clear previous scanner div content
   document.getElementById('html5-qr-scanner').innerHTML = '';
 
-  try {
-    window._html5QrCode = new Html5Qrcode('html5-qr-scanner');
-    await window._html5QrCode.start(
-      { facingMode: 'environment' },
-      {
-        fps: 10,
-        qrbox: { width: 250, height: 120 },
-        aspectRatio: 1.5
-      },
-      (decodedText) => { handleScannedCode(decodedText); },
-      () => {}
-    );
-    document.getElementById('scanner-status').textContent = 'Hold stregkoden ind mod den røde linje...';
-  } catch(e) {
-    document.getElementById('scanner-status').textContent = 'Kamera fejl: ' + (e.message || e);
+  // Stop any previous scanner
+  if (window._html5QrCode) {
+    try { await window._html5QrCode.stop(); } catch(e) {}
+    window._html5QrCode = null;
   }
+
+  // Load Quagga — specialist i EAN/ISBN stregkoder
+  if (!window.Quagga) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    }).catch(() => {
+      document.getElementById('scanner-status').textContent = 'Kunne ikke indlæse scanner';
+      return;
+    });
+  }
+
+  // Create video element inside scanner div
+  const scannerDiv = document.getElementById('html5-qr-scanner');
+  scannerDiv.style.cssText = 'width:100%;max-width:400px;position:relative;background:#000;';
+
+  Quagga.init({
+    inputStream: {
+      name: 'Live',
+      type: 'LiveStream',
+      target: scannerDiv,
+      constraints: {
+        facingMode: 'environment',
+        width: { min: 640 },
+        height: { min: 480 }
+      },
+    },
+    decoder: {
+      readers: ['ean_reader', 'ean_8_reader']
+    },
+    locate: true
+  }, function(err) {
+    if (err) {
+      document.getElementById('scanner-status').textContent = 'Kamera fejl — tjek tilladelser i Chrome';
+      return;
+    }
+    Quagga.start();
+    document.getElementById('scanner-status').textContent = 'Hold stregkoden ind mod kameraet...';
+  });
+
+  let lastCode = null;
+  let codeCount = 0;
+
+  Quagga.onDetected(function(result) {
+    const code = result.codeResult.code;
+    // Kræv samme kode 2 gange for at undgå falske aflæsninger
+    if (code === lastCode) {
+      codeCount++;
+      if (codeCount >= 2) {
+        handleScannedCode(code);
+      }
+    } else {
+      lastCode = code;
+      codeCount = 1;
+    }
+  });
 }
 
 function startDecoding() {} // ikke brugt længere
@@ -1317,12 +1350,13 @@ function handleScannedCode(code) {
 
 async function stopScanner() {
   if (scannerInterval) { clearInterval(scannerInterval); scannerInterval = null; }
+  if (window.Quagga) { try { Quagga.stop(); } catch(e) {} }
   if (window._html5QrCode) {
     try { await window._html5QrCode.stop(); } catch(e) {}
     window._html5QrCode = null;
   }
-  if (window._zxingReader) { try { window._zxingReader.reset(); } catch(e){} window._zxingReader = null; }
   if (scannerStream) { scannerStream.getTracks().forEach(t => t.stop()); scannerStream = null; }
+  document.getElementById('html5-qr-scanner').innerHTML = '';
   document.getElementById('scanner-overlay').style.display = 'none';
 }
 
